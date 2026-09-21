@@ -24,7 +24,7 @@ docker compose version >/dev/null 2>&1 || { echo "docker compose not found" >&2;
 
 mkdir -p "$DEST"
 
-for f in observability.compose.yml config.alloy .env.template; do
+for f in compose.yaml config.alloy .env.template; do
   echo "fetch: $f"
   curl -fsSL "$REPO/$f" -o "$DEST/$f"
 done

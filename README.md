@@ -8,7 +8,7 @@ WordPress, hand-rolled — because it reads container logs off the Docker API
 and host stats off `/proc`, which are the same everywhere.
 
 ```
-observability.compose.yml   alloy + docker-socket-proxy + cadvisor
+compose.yaml   alloy + docker-socket-proxy + cadvisor
 config.alloy                copy unchanged
 .env.template               copy to .env and fill in
 install.sh                  fetches the three above
