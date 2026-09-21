@@ -1,8 +1,0 @@
-// Placeholder mounted in place of nginx.alloy on hosts that do not serve
-// vhosts, which is the default. Deliberately declares nothing.
-//
-// A host that serves sites sets NGINX_ALLOY_CONFIG=./nginx.alloy in .env
-// and mounts its log directory and GeoIP database; see .env.template.
-//
-// This exists rather than mounting /dev/null so that what Alloy loads is
-// always a real, readable, obviously-empty file.

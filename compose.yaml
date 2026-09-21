@@ -53,7 +53,7 @@ services:
       DOCKER_API_VERSION: ${DOCKER_API_VERSION:-1.41}
     command:
       - run
-      - /etc/alloy/config.d
+      - /etc/alloy/config.alloy
       - --storage.path=/var/lib/alloy/data
       - --server.http.listen-addr=0.0.0.0:12345
     expose:
@@ -63,11 +63,7 @@ services:
       - "127.0.0.1:${ALLOY_DEBUG_PORT:-12345}:12345"
     volumes:
       - alloy_data:/var/lib/alloy/data
-      - ./config.alloy:/etc/alloy/config.d/base.alloy:ro
-      # Swapped for ./nginx.alloy on hosts serving vhosts. The default is a
-      # real empty file, so boxes without nginx carry no geoip dependency.
-      - ${NGINX_ALLOY_CONFIG:-./nginx.disabled.alloy}:/etc/alloy/config.d/nginx.alloy:ro
-      - ${GEOIP_DB_DIR:-/dev/null}:/etc/alloy/geoip:ro
+      - ./config.alloy:/etc/alloy/config.alloy:ro
       - /:/rootfs:ro
       - ${APP_LOG_DIR:-/dev/null}:/app-logs:ro
       # Read-only nginx access/error logs. Unset NGINX_LOG_DIR mounts

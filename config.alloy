@@ -190,3 +190,94 @@ prometheus.remote_write "aggregator" {
     }
   }
 }
+
+// --- nginx per-site logs ---------------------------------------------------
+// One file per vhost: /var/log/nginx/<site>-access.log. Inert unless
+// NGINX_LOG_DIR is set: with it unset the compose file mounts /dev/null at
+// /var/log/nginx and these globs match nothing.
+//
+// The globs match only live files -- including .log.1 and .log.N.gz would
+// re-ingest months of history on every start, and again each midnight as
+// logrotate renames them into positions already seen.
+//
+// No GeoIP here. Country is resolved centrally by the relay in front of
+// Loki, so a fleet of nginx boxes shares one database and one update job
+// instead of carrying a copy and a licence key each.
+
+local.file_match "nginx" {
+  path_targets = [
+    { __path__ = "/var/log/nginx/*-access.log", job = "nginx", service = "nginx-access" },
+    { __path__ = "/var/log/nginx/*-error.log",  job = "nginx", service = "nginx-error"  },
+  ]
+}
+
+// site comes from the path at discovery time rather than from a pipeline
+// stage, so it is a real stream label before the first line is read. Kept
+// verbatim: dashes are NOT converted back to dots, because a domain that
+// genuinely contains a hyphen would be ambiguous.
+discovery.relabel "nginx" {
+  targets = local.file_match.nginx.targets
+
+  rule {
+    source_labels = ["__path__"]
+    regex         = "/var/log/nginx/(.+)-(?:access|error)\\.log"
+    target_label  = "site"
+  }
+}
+
+loki.source.file "nginx" {
+  targets    = discovery.relabel.nginx.output
+  forward_to = [loki.process.nginx.receiver]
+}
+
+loki.process "nginx" {
+  forward_to = [loki.write.aggregator.receiver]
+
+  stage.drop {
+    older_than          = "168h"
+    drop_counter_reason = "too_old_for_loki"
+  }
+
+  // 1:1 with site, and hundreds of long filenames make every label dropdown
+  // unusable.
+  stage.label_drop {
+    values = ["filename"]
+  }
+
+  stage.match {
+    selector = "{service=\"nginx-access\"}"
+
+    // Only the timestamp is extracted. method, path, status, referer, user
+    // agent and client address are read at query time with | pattern, which
+    // costs nothing until asked for and applies to lines already stored.
+    stage.regex {
+      expression = "^\\S+ \\S+ \\S+ \\[(?P<ts>[^\\]]+)\\]"
+    }
+    stage.timestamp {
+      source = "ts"
+      format = "02/Jan/2006:15:04:05 -0700"
+    }
+    stage.static_labels {
+      values = { level = "info" }
+    }
+  }
+
+  stage.match {
+    selector = "{service=\"nginx-error\"}"
+
+    // nginx error lines carry no UTC offset, so the host's zone has to be
+    // supplied. A wrong value here shifts every error by hours and nothing
+    // about that failure is loud.
+    stage.regex {
+      expression = "^(?P<ts>\\d{4}/\\d{2}/\\d{2} \\d{2}:\\d{2}:\\d{2}) \\[(?P<level>\\w+)\\]"
+    }
+    stage.timestamp {
+      source   = "ts"
+      format   = "2006/01/02 15:04:05"
+      location = sys.env("TZ")
+    }
+    stage.labels {
+      values = { level = "" }
+    }
+  }
+}
