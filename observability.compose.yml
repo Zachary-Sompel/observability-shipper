@@ -1,4 +1,4 @@
-# Ships this VPS's container logs and host/container metrics to the Unova stack.
+# Ships this VPS's container logs and host/container metrics to a central observability stack.
 # One of these per VPS. Keep these files in their own directory: Compose reads
 # .env from here automatically, so it must not be shared with the app's .env.
 #
