@@ -42,6 +42,8 @@ services:
     <<: *hardening
     image: ${ALLOY_IMAGE:-grafana/alloy:v1.17.1}
     container_name: system-alloy
+    # Alloy is not root. To read nginx logs (www-data:adm 0640) set
+    # ALLOY_GID to the host's adm group id -- see .env.template.
     user: "${ALLOY_UID:-473}:${ALLOY_GID:-473}"
     restart: unless-stopped
     env_file:
@@ -64,6 +66,9 @@ services:
       - ./config.alloy:/etc/alloy/config.alloy:ro
       - /:/rootfs:ro
       - ${APP_LOG_DIR:-/dev/null}:/app-logs:ro
+      # Read-only nginx access/error logs. Unset NGINX_LOG_DIR mounts
+      # /dev/null, so the globs in config.alloy match nothing.
+      - ${NGINX_LOG_DIR:-/dev/null}:/var/log/nginx:ro
     tmpfs:
       - /tmp
     networks:
@@ -73,7 +78,7 @@ services:
       - cadvisor
 
   cadvisor:
-    image: ${CADVISOR_IMAGE:-gcr.io/cadvisor/cadvisor:v0.53.0}
+    image: ${CADVISOR_IMAGE:-gcr.io/cadvisor/cadvisor:v0.55.1}
     container_name: system-cadvisor
     restart: unless-stopped
     privileged: true
