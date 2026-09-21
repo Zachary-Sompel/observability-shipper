@@ -1,0 +1,110 @@
+# observability-shipper
+
+Ships a host's container logs and host/container metrics to a central
+Grafana Alloy → Loki / Prometheus stack.
+
+One of these per host. The application can be anything — Node, Laravel,
+WordPress, hand-rolled — because it reads container logs off the Docker API
+and host stats off `/proc`, which are the same everywhere.
+
+```
+observability.compose.yml   alloy + docker-socket-proxy + cadvisor
+config.alloy                copy unchanged
+.env.template               copy to .env and fill in
+install.sh                  fetches the three above
+```
+
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OWNER/observability-shipper/main/install.sh \
+  | sudo bash -s -- my-project
+```
+
+Then set the two endpoints in `/opt/observability/.env` and:
+
+```bash
+cd /opt/observability && docker compose up -d
+```
+
+Re-running the installer updates the three tracked files and leaves `.env`
+alone, so upgrading a fleet is the same one-liner.
+
+## Configure
+
+Everything host-specific is in `.env`. `config.alloy` is copied unchanged and
+should stay that way — if a host needs different behaviour, that is a signal
+the difference belongs in a label, not in a forked config.
+
+| Variable | Notes |
+| --- | --- |
+| `PROJECT_NAME` | The `project=` label on every line and series |
+| `CONTAINER_PREFIX` | Only `<prefix>-*` and `system-*` containers are collected |
+| `PROJECT_ENVIRONMENT` | `production`, `staging`, … |
+| `PROJECT_HOSTNAME` | The `host=` label. Use something recognisable in a dashboard |
+| `LOKI_ENDPOINT` | `…/loki/api/v1/push` |
+| `METRICS_ENDPOINT` | `…/api/v1/write` |
+| `INGEST_USERNAME` / `INGEST_PASSWORD` | Leave **both** blank on a private path |
+
+**The endpoints have no defaults on purpose.** A plausible-looking default is
+how a host ends up shipping to the wrong aggregator, and that failure is
+silent — logs arrive somewhere, just not where anyone is looking.
+
+### Private path or published path
+
+Over a private network — same VPC, or peered — ship plain HTTP to an internal
+name and leave the credentials blank. The network is the authorisation:
+
+```
+LOKI_ENDPOINT=http://logs.internal.example:8100/loki/api/v1/push
+METRICS_ENDPOINT=http://logs.internal.example:8100/api/v1/write
+```
+
+From anywhere else, use the published ingest host over HTTPS with a
+per-host credential, so a compromised host is revoked on its own:
+
+```
+LOKI_ENDPOINT=https://logs.example.com/loki/api/v1/push
+METRICS_ENDPOINT=https://logs.example.com/api/v1/write
+INGEST_USERNAME=my-project
+INGEST_PASSWORD=…
+```
+
+## Verify
+
+```bash
+docker compose ps
+docker logs --tail 20 system-alloy
+curl -sS http://127.0.0.1:12345/-/ready
+```
+
+Then in Grafana: `{project="my-project"}` for logs, `up{project="my-project"}`
+for metrics. **Confirm on one host before installing on a second** — the
+common failures (wrong endpoint, unreachable name, blocked port) look
+identical from the shipper's side, and finding them once is much cheaper than
+finding them twenty times.
+
+## Notes
+
+`CONTAINER_PREFIX` decides what is collected. The filter is applied twice —
+once for logs, once for cAdvisor — because cAdvisor reports every container
+on the host regardless of the log discovery filter.
+
+`cadvisor` runs privileged; it needs cgroup and Docker filesystem access,
+which is why it is a separate container rather than folded into Alloy. Drop
+the service and the `prometheus.scrape "cadvisor"` block if that is not
+acceptable on a given host — host metrics and logs are unaffected.
+
+Alloy's debug UI binds to `127.0.0.1`. No inbound port is opened on the host.
+
+Containers, network and volume are named `system-*` rather than per-project:
+there is only ever one of these on a host, and fixed names mean the compose
+file is identical everywhere.
+
+## Labels
+
+Required on every stream: `project`, `environment`, `host`, plus `service`,
+`container` and `level` which come off the Docker API and the log line.
+
+High-cardinality labels are banned — request ID, user ID, IP address, full
+URL with query string, session ID. Put those in the log body.

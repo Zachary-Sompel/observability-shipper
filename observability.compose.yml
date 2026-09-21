@@ -1,0 +1,103 @@
+# Ships this VPS's container logs and host/container metrics to the Unova stack.
+# One of these per VPS. Keep these files in their own directory: Compose reads
+# .env from here automatically, so it must not be shared with the app's .env.
+#
+#   docker compose up -d
+
+name: system-observability
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+services:
+  docker-socket-proxy:
+    <<: *hardening
+    image: ${DOCKER_SOCKET_PROXY_IMAGE:-tecnativa/docker-socket-proxy:0.3.0}
+    container_name: system-docker-socket-proxy
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-UTC}
+      CONTAINERS: 1
+      EVENTS: 1
+      INFO: 1
+      NETWORKS: 1
+      PING: 1
+      VERSION: 1
+      POST: 0
+      SERVICES: 0
+      TASKS: 0
+    expose:
+      - "2375"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    tmpfs:
+      - /tmp
+    networks:
+      - observability
+
+  alloy:
+    <<: *hardening
+    image: ${ALLOY_IMAGE:-grafana/alloy:v1.17.1}
+    container_name: system-alloy
+    user: "${ALLOY_UID:-473}:${ALLOY_GID:-473}"
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ:-UTC}
+      DOCKER_API_VERSION: ${DOCKER_API_VERSION:-1.41}
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
+      - --server.http.listen-addr=0.0.0.0:12345
+    expose:
+      - "12345"
+    ports:
+      # Loopback only: the debug UI is unauthenticated.
+      - "127.0.0.1:${ALLOY_DEBUG_PORT:-12345}:12345"
+    volumes:
+      - alloy_data:/var/lib/alloy/data
+      - ./config.alloy:/etc/alloy/config.alloy:ro
+      - /:/rootfs:ro
+      - ${APP_LOG_DIR:-/dev/null}:/app-logs:ro
+    tmpfs:
+      - /tmp
+    networks:
+      - observability
+    depends_on:
+      - docker-socket-proxy
+      - cadvisor
+
+  cadvisor:
+    image: ${CADVISOR_IMAGE:-gcr.io/cadvisor/cadvisor:v0.53.0}
+    container_name: system-cadvisor
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/kmsg
+    command:
+      - --housekeeping_interval=30s
+      - --docker_only=true
+      - --store_container_labels=false
+    expose:
+      - "8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks:
+      - observability
+
+networks:
+  observability:
+    name: system-observability
+
+volumes:
+  alloy_data:
+    name: system_alloy_data

@@ -1,0 +1,192 @@
+// Logs to Loki, metrics to Prometheus, both on the central aggregator.
+// Copy unchanged. Everything project-specific comes from .env.
+
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+// --- container logs --------------------------------------------------------
+
+discovery.docker "containers" {
+  host = "tcp://docker-socket-proxy:2375"
+}
+
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  // This project's containers plus the observability stack itself. Boxes are
+  // often shared; anything else on the host is never read.
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(" + sys.env("CONTAINER_PREFIX") + "|system)-.*"
+    action        = "keep"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "service"
+  }
+}
+
+loki.source.docker "containers" {
+  host       = "tcp://docker-socket-proxy:2375"
+  targets    = discovery.relabel.containers.output
+  forward_to = [loki.process.containers.receiver]
+}
+
+loki.process "containers" {
+  forward_to = [loki.write.aggregator.receiver]
+
+  // Loki rejects entries older than 168h with a 400 that fails the whole
+  // batch. On restart Alloy re-reads a container log from the beginning, so
+  // without this a long-lived container's replay drops current lines too.
+  stage.drop {
+    older_than          = "168h"
+    drop_counter_reason = "too_old_for_loki"
+  }
+
+  stage.static_labels {
+    values = {
+      job = "docker",
+    }
+  }
+
+  // Lowercased: Grafana's level colouring and level-based panels match
+  // lowercase, and emitters vary between WARN, Warn and warning.
+  stage.regex {
+    expression = "(?i)(?P<level>\\b(emergency|alert|critical|error|warning|warn|notice|info|debug)\\b)"
+  }
+
+  stage.template {
+    source   = "level"
+    template = "{{ if eq (ToLower .Value) \"warn\" }}warning{{ else }}{{ ToLower .Value }}{{ end }}"
+  }
+
+  stage.labels {
+    values = {
+      level = "",
+    }
+  }
+}
+
+// --- app-written log files -------------------------------------------------
+
+local.file_match "app_logs" {
+  path_targets = [
+    {
+      __path__    = "/app-logs/**/*.log",
+      job         = "files",
+      service     = sys.env("PROJECT_NAME") + "-app",
+    },
+  ]
+}
+
+loki.source.file "app_logs" {
+  targets    = local.file_match.app_logs.targets
+  forward_to = [loki.process.app_logs.receiver]
+}
+
+loki.process "app_logs" {
+  forward_to = [loki.write.aggregator.receiver]
+
+  stage.drop {
+    older_than          = "168h"
+    drop_counter_reason = "too_old_for_loki"
+  }
+
+  stage.regex {
+    expression = "(?i)(?P<level>\\b(emergency|alert|critical|error|warning|warn|notice|info|debug)\\b)"
+  }
+
+  stage.template {
+    source   = "level"
+    template = "{{ if eq (ToLower .Value) \"warn\" }}warning{{ else }}{{ ToLower .Value }}{{ end }}"
+  }
+
+  stage.labels {
+    values = {
+      level = "",
+    }
+  }
+}
+
+// --- host metrics ----------------------------------------------------------
+
+prometheus.exporter.unix "host" {
+  rootfs_path = "/rootfs"
+  procfs_path = "/rootfs/proc"
+  sysfs_path  = "/rootfs/sys"
+}
+
+prometheus.scrape "host" {
+  targets         = prometheus.exporter.unix.host.targets
+  forward_to      = [prometheus.remote_write.aggregator.receiver]
+  scrape_interval = "30s"
+  job_name        = "node"
+}
+
+// --- container metrics -----------------------------------------------------
+
+prometheus.scrape "cadvisor" {
+  targets = [
+    {"__address__" = "cadvisor:8080", "job" = "cadvisor"},
+  ]
+  forward_to      = [prometheus.relabel.cadvisor.receiver]
+  scrape_interval = "30s"
+}
+
+// cAdvisor reports every container on the host regardless of the log
+// discovery filter, and per-container series are the bulk of what this ships.
+prometheus.relabel "cadvisor" {
+  forward_to = [prometheus.remote_write.aggregator.receiver]
+
+  rule {
+    source_labels = ["name"]
+    regex         = "(" + sys.env("CONTAINER_PREFIX") + "|system)-.*"
+    action        = "keep"
+  }
+}
+
+// --- ship ------------------------------------------------------------------
+
+loki.write "aggregator" {
+  external_labels = {
+    project     = sys.env("PROJECT_NAME"),
+    environment = sys.env("PROJECT_ENVIRONMENT"),
+    host        = sys.env("PROJECT_HOSTNAME"),
+  }
+
+  endpoint {
+    url = sys.env("LOKI_ENDPOINT")
+
+    basic_auth {
+      username = sys.env("INGEST_USERNAME")
+      password = sys.env("INGEST_PASSWORD")
+    }
+  }
+}
+
+prometheus.remote_write "aggregator" {
+  external_labels = {
+    project     = sys.env("PROJECT_NAME"),
+    environment = sys.env("PROJECT_ENVIRONMENT"),
+    host        = sys.env("PROJECT_HOSTNAME"),
+  }
+
+  endpoint {
+    url = sys.env("METRICS_ENDPOINT")
+
+    basic_auth {
+      username = sys.env("INGEST_USERNAME")
+      password = sys.env("INGEST_PASSWORD")
+    }
+  }
+}
