@@ -272,8 +272,11 @@ loki.source.file "nginx" {
 }
 
 // --- one-off backfill ------------------------------------------------------
-// Inert unless NGINX_BACKFILL_DIR is set: unset, the glob becomes
-// /dev/null/*-access.log and matches nothing. For getting history in after the
+// Inert unless NGINX_BACKFILL_DIR is set. The path here is the one INSIDE the
+// container, fixed by the compose mount; NGINX_BACKFILL_DIR only says which
+// host directory lands on it, exactly as NGINX_LOG_DIR does. Unset, compose
+// mounts /dev/null there and these globs match nothing. For getting history in
+// after the
 // fact: decompress the rotated logs you want into that directory named
 // <site>-access.log, start the stack, watch it drain, then unset it again.
 //
@@ -291,13 +294,13 @@ loki.source.file "nginx" {
 // -- so every dashboard sees the backfilled data with no query changes.
 local.file_match "nginx_backfill" {
   path_targets = [
-    { __path__ = coalesce(sys.env("NGINX_BACKFILL_DIR"), "/dev/null") + "/*-access.log",
+    { __path__ = "/var/log/nginx-backfill/*-access.log",
       job = "nginx", service = "nginx-access", backfill = "true" },
-    { __path__ = coalesce(sys.env("NGINX_BACKFILL_DIR"), "/dev/null") + "/*-error.log",
+    { __path__ = "/var/log/nginx-backfill/*-error.log",
       job = "nginx", service = "nginx-error", backfill = "true" },
-    { __path__ = coalesce(sys.env("NGINX_BACKFILL_DIR"), "/dev/null") + "/access-*.log",
+    { __path__ = "/var/log/nginx-backfill/access-*.log",
       job = "nginx", service = "nginx-access", backfill = "true" },
-    { __path__ = coalesce(sys.env("NGINX_BACKFILL_DIR"), "/dev/null") + "/error-*.log",
+    { __path__ = "/var/log/nginx-backfill/error-*.log",
       job = "nginx", service = "nginx-error", backfill = "true" },
   ]
 }

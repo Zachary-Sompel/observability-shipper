@@ -180,7 +180,16 @@ NGINX_BACKFILL_DIR=/var/log/nginx-backfill
 ```
 
 and `docker compose up -d` — **not `restart`**, which reuses the container and
-its old environment.
+its old environment, and would not pick up the new bind mount either.
+
+Confirm Alloy can actually see the files before waiting on data:
+
+```
+docker exec system-alloy ls -l /var/log/nginx-backfill/
+```
+
+An empty listing means the mount is not there, which looks identical to a
+backfill that shipped nothing.
 
 Watch it drain with `docker compose logs -f alloy`, confirm the data is there,
 then unset both and `up -d` again.

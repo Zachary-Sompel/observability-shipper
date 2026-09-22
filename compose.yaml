@@ -69,6 +69,11 @@ services:
       # Read-only nginx access/error logs. Unset NGINX_LOG_DIR mounts
       # /dev/null, so the globs in config.alloy match nothing.
       - ${NGINX_LOG_DIR:-/dev/null}:/var/log/nginx:ro
+      # One-off backfill. Same trick: unset, /dev/null is mounted here
+      # and the globs match nothing. Without this mount the directory
+      # exists on the host and not to Alloy, which reads as a backfill
+      # that ships nothing and says nothing.
+      - ${NGINX_BACKFILL_DIR:-/dev/null}:/var/log/nginx-backfill:ro
     tmpfs:
       - /tmp
     networks:
