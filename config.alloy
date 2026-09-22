@@ -295,15 +295,22 @@ local.file_match "nginx_backfill" {
       job = "nginx", service = "nginx-access", backfill = "true" },
     { __path__ = coalesce(sys.env("NGINX_BACKFILL_DIR"), "/dev/null") + "/*-error.log",
       job = "nginx", service = "nginx-error", backfill = "true" },
+    { __path__ = coalesce(sys.env("NGINX_BACKFILL_DIR"), "/dev/null") + "/access-*.log",
+      job = "nginx", service = "nginx-access", backfill = "true" },
+    { __path__ = coalesce(sys.env("NGINX_BACKFILL_DIR"), "/dev/null") + "/error-*.log",
+      job = "nginx", service = "nginx-error", backfill = "true" },
   ]
 }
 
 discovery.relabel "nginx_backfill" {
   targets = local.file_match.nginx_backfill.targets
 
+  // Same extraction as the live pipeline, and it has to be: a backfilled
+  // line landing under a different site label than the live lines for the
+  // same site would split one site's history in two, silently.
   rule {
     source_labels = ["__path__"]
-    regex         = ".*/(.+)-(?:access|error)\\.log"
+    regex         = coalesce(sys.env("NGINX_SITE_REGEX_BACKFILL"), ".*/(?:(?:access|error)-)?(.+?)(?:-(?:access|error))?\\.log")
     target_label  = "site"
   }
 }

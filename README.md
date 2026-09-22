@@ -143,6 +143,61 @@ A single combined `access.log` cannot produce per-site labels at all — the
 label comes from the filename, so nginx needs a per-vhost `access_log`
 directive for any of this to work.
 
+### Backfilling history
+
+Three gates stop old lines, and all three have to open. Two are on the box,
+one is on the aggregator.
+
+1. **The aggregator's Loki** refuses anything past its
+   `reject_old_samples_max_age`. Nothing you do on a shipper changes this, and
+   it fails per line with no summary, so check it first.
+2. **`LOG_MAX_AGE`** — Alloy drops older lines before shipping. Default 168h.
+3. **The live globs match only `*.log`**, never `.log.1` or `.log.9.gz`. Your
+   history is in rotated files nothing reads, by design: logrotate renames
+   files into positions already read, so widening the globs would re-ingest
+   months on every restart and again each midnight.
+
+So backfill is a separate directory you fill on purpose:
+
+```
+mkdir -p /var/log/nginx-backfill
+
+# keep the filename identical to the live one, minus the rotation suffix --
+# the site label comes from the filename, and a different name means a
+# different site
+zcat /var/log/nginx/access-example.log.*.gz \
+  | cat - /var/log/nginx/access-example.log.1 \
+  > /var/log/nginx-backfill/access-example.log
+chown www-data:adm /var/log/nginx-backfill/*.log
+chmod 640 /var/log/nginx-backfill/*.log
+```
+
+Then in `.env`:
+
+```
+LOG_MAX_AGE=744h
+NGINX_BACKFILL_DIR=/var/log/nginx-backfill
+```
+
+and `docker compose up -d` — **not `restart`**, which reuses the container and
+its old environment.
+
+Watch it drain with `docker compose logs -f alloy`, confirm the data is there,
+then unset both and `up -d` again.
+
+Three things worth knowing:
+
+- Lines ship with `backfill="true"`, which puts them in their own stream.
+  That is load-bearing: Loki accepts out-of-order writes only within a window
+  relative to a stream's head, so old lines pushed into a stream holding
+  today's are refused as *too far behind*. `{service="nginx-access"}` still
+  matches them, so every dashboard sees the history with no query change.
+- **Alloy remembers what it has read.** Positions live in its data volume, so
+  re-running the same file ships nothing twice — and equally, fixing a mistake
+  means a new filename, not a re-run.
+- Ingesting further back than the aggregator's `retention_period` is wasted
+  work. It lands and the compactor deletes it.
+
 `cadvisor` runs privileged; it needs cgroup and Docker filesystem access,
 which is why it is a separate container rather than folded into Alloy. Drop
 the service and the `prometheus.scrape "cadvisor"` block if that is not
