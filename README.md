@@ -143,6 +143,31 @@ A single combined `access.log` cannot produce per-site labels at all — the
 label comes from the filename, so nginx needs a per-vhost `access_log`
 directive for any of this to work.
 
+### The `bot` label
+
+Access lines are classified as automated or not **as they are read**, and ship
+with a `bot="true"/"false"` stream label. Dashboards then filter with
+`{bot!="true"}` — a stream selector, so Loki skips the chunks entirely.
+
+This replaced a 50-branch regex over the user agent at query time. That regex
+ran against every parsed line on every panel load, and once sites had a
+fortnight of history behind them, 14-day views simply timed out on it.
+
+Two things follow from it being a stream label:
+
+- **It doubles the stream count** for nginx access logs, which is the price.
+  Two values per site, well inside `max_streams_per_user`.
+- **Lines ingested before this existed carry no label at all.** Loki reads an
+  absent label as empty, so `bot!="true"` still finds them and human figures
+  stay correct, while `bot="true"` only sees lines classified since — so
+  automated figures under-report for older data until it ages out of
+  retention. Re-ingest if that matters: delete the old stream through Loki's
+  delete API and run the backfill again.
+
+The agent is taken as the last of the two adjacent quoted fields, which holds
+for stock combined and for the extended format with `rt=`/`urt=`/`host=` after
+it, because referer and agent stay adjacent in both.
+
 ### Backfilling history
 
 Three gates stop old lines, and all three have to open. Two are on the box,

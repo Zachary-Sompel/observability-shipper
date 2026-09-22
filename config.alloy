@@ -358,6 +358,36 @@ loki.process "nginx" {
     stage.static_labels {
       values = { level = "info" }
     }
+
+    // --- bot classification, decided once, here --------------------------
+    //
+    // Every dashboard wants "human traffic only", and the obvious way to get
+    // it is a 50-branch regex over the user agent at query time. That runs
+    // against every parsed line on every panel load, and on a site with a
+    // fortnight of history behind it, it is the whole cost of the query --
+    // 14-day views time out on it.
+    //
+    // Deciding it at ingest turns that into a stream label. `bot` has two
+    // values, so it at most doubles the stream count, and in exchange
+    // {bot!="true"} becomes a stream selector: Loki skips whole chunks of
+    // automated traffic without reading them.
+    //
+    // The agent is the LAST of the two adjacent quoted fields. That holds for
+    // stock combined and for the extended format with rt=/urt=/host= after
+    // it, because the referer and agent stay adjacent in both.
+    stage.regex {
+      expression = "\"[^\"]*\"\\s+\"(?P<agent>[^\"]*)\""
+    }
+    stage.template {
+      source   = "bot"
+      template = "{{ if regexMatch \"(?i)(bot|crawl|spider|slurp|curl|wget|python|scrapy|httpclient|okhttp|java|go-http|libwww|perl|ruby|axios|node-fetch|headless|phantom|puppeteer|playwright|ahrefs|semrush|mj12|dotbot|petal|bytespider|gptbot|claudebot|ccbot|amazonbot|applebot|facebookexternalhit|dataforseo|serpstat|zoominfo|censys|masscan|zgrab|nmap|nuclei|wpscan)\" .agent }}true{{ else }}false{{ end }}"
+    }
+    // Only bot is promoted. agent stays an extracted value and is read at
+    // query time by | pattern, as before -- putting it in a label would be
+    // catastrophic cardinality.
+    stage.labels {
+      values = { bot = "" }
+    }
   }
 
   stage.match {
