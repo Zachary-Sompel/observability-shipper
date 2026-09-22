@@ -41,7 +41,7 @@ the difference belongs in a label, not in a forked config.
 | `PROJECT_NAME` | The `project=` label on every line and series |
 | `CONTAINER_PREFIX` | Only `<prefix>`, `<prefix>-*` and `system-*` containers are collected. A regex: pipe-separated, `.*` for everything |
 | `PROJECT_ENVIRONMENT` | `production`, `staging`, … |
-| `PROJECT_HOSTNAME` | The `host=` label. Use something recognisable in a dashboard |
+| `PROJECT_HOSTNAME` | The `host=` label. **Unique per box** — boxes sharing a `PROJECT_NAME` are told apart by this alone, and duplicating it makes metrics silently lossy |
 | `LOKI_ENDPOINT` | `…/loki/api/v1/push` |
 | `METRICS_ENDPOINT` | `…/api/v1/write` |
 | `INGEST_USERNAME` / `INGEST_PASSWORD` | Leave **both** blank on a private path |
