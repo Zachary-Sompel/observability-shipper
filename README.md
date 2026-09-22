@@ -219,6 +219,12 @@ backfill that shipped nothing.
 Watch it drain with `docker compose logs -f alloy`, confirm the data is there,
 then unset both and `up -d` again.
 
+To re-ingest a backfill that arrived before the `bot` label existed, delete
+the old copy on the aggregator (`./scripts/delete-backfill.sh`) and run
+`./reingest-backfill.sh` here. Alloy remembers how far it read into every
+file, so a plain restart re-ships nothing; that script clears the position for
+the backfill component alone, leaving every live log's position intact.
+
 Three things worth knowing:
 
 - Lines ship with `backfill="true"`, which puts them in their own stream.
