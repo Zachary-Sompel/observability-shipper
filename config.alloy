@@ -54,8 +54,13 @@ loki.process "containers" {
   // Loki rejects entries older than 168h with a 400 that fails the whole
   // batch. On restart Alloy re-reads a container log from the beginning, so
   // without this a long-lived container's replay drops current lines too.
+  // Alloy's own age gate, ahead of Loki's. It exists so a re-read of an old
+  // file cannot flood ingest. Raise it with LOG_MAX_AGE to backfill, and note
+  // it is only the first gate: the aggregator's Loki independently refuses
+  // anything past reject_old_samples_max_age, and for nginx the live globs
+  // match no rotated file at all. See the backfill block at the end.
   stage.drop {
-    older_than          = "168h"
+    older_than          = coalesce(sys.env("LOG_MAX_AGE"), "168h")
     drop_counter_reason = "too_old_for_loki"
   }
 
@@ -103,8 +108,13 @@ loki.source.file "app_logs" {
 loki.process "app_logs" {
   forward_to = [loki.write.aggregator.receiver]
 
+  // Alloy's own age gate, ahead of Loki's. It exists so a re-read of an old
+  // file cannot flood ingest. Raise it with LOG_MAX_AGE to backfill, and note
+  // it is only the first gate: the aggregator's Loki independently refuses
+  // anything past reject_old_samples_max_age, and for nginx the live globs
+  // match no rotated file at all. See the backfill block at the end.
   stage.drop {
-    older_than          = "168h"
+    older_than          = coalesce(sys.env("LOG_MAX_AGE"), "168h")
     drop_counter_reason = "too_old_for_loki"
   }
 
@@ -236,11 +246,58 @@ loki.source.file "nginx" {
   forward_to = [loki.process.nginx.receiver]
 }
 
+// --- one-off backfill ------------------------------------------------------
+// Inert unless NGINX_BACKFILL_DIR is set: unset, the glob becomes
+// /dev/null/*-access.log and matches nothing. For getting history in after the
+// fact: decompress the rotated logs you want into that directory named
+// <site>-access.log, start the stack, watch it drain, then unset it again.
+//
+// Why a separate directory rather than widening the globs above: the live
+// globs deliberately exclude .log.1 and .log.N.gz, because logrotate renames
+// files into positions Alloy has already read and every restart and midnight
+// would re-ingest months of history. Backfill is a thing you do once, on
+// purpose, to a set of files you chose.
+//
+// The backfill label is load-bearing, not decoration. Loki accepts
+// out-of-order writes only within a window relative to a stream's head, so
+// pushing fortnight-old lines into a stream that already holds today's is
+// refused with "entry too far behind". A distinct label makes it a separate
+// stream with its own head, while {service="nginx-access"} still matches it
+// -- so every dashboard sees the backfilled data with no query changes.
+local.file_match "nginx_backfill" {
+  path_targets = [
+    { __path__ = coalesce(sys.env("NGINX_BACKFILL_DIR"), "/dev/null") + "/*-access.log",
+      job = "nginx", service = "nginx-access", backfill = "true" },
+    { __path__ = coalesce(sys.env("NGINX_BACKFILL_DIR"), "/dev/null") + "/*-error.log",
+      job = "nginx", service = "nginx-error", backfill = "true" },
+  ]
+}
+
+discovery.relabel "nginx_backfill" {
+  targets = local.file_match.nginx_backfill.targets
+
+  rule {
+    source_labels = ["__path__"]
+    regex         = ".*/(.+)-(?:access|error)\\.log"
+    target_label  = "site"
+  }
+}
+
+loki.source.file "nginx_backfill" {
+  targets    = discovery.relabel.nginx_backfill.output
+  forward_to = [loki.process.nginx.receiver]
+}
+
 loki.process "nginx" {
   forward_to = [loki.write.aggregator.receiver]
 
+  // Alloy's own age gate, ahead of Loki's. It exists so a re-read of an old
+  // file cannot flood ingest. Raise it with LOG_MAX_AGE to backfill, and note
+  // it is only the first gate: the aggregator's Loki independently refuses
+  // anything past reject_old_samples_max_age, and for nginx the live globs
+  // match no rotated file at all. See the backfill block at the end.
   stage.drop {
-    older_than          = "168h"
+    older_than          = coalesce(sys.env("LOG_MAX_AGE"), "168h")
     drop_counter_reason = "too_old_for_loki"
   }
 
