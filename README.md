@@ -39,7 +39,7 @@ the difference belongs in a label, not in a forked config.
 | Variable | Notes |
 | --- | --- |
 | `PROJECT_NAME` | The `project=` label on every line and series |
-| `CONTAINER_PREFIX` | Only `<prefix>-*` and `system-*` containers are collected |
+| `CONTAINER_PREFIX` | Only `<prefix>`, `<prefix>-*` and `system-*` containers are collected. A regex: pipe-separated, `.*` for everything |
 | `PROJECT_ENVIRONMENT` | `production`, `staging`, … |
 | `PROJECT_HOSTNAME` | The `host=` label. Use something recognisable in a dashboard |
 | `LOKI_ENDPOINT` | `…/loki/api/v1/push` |
@@ -89,6 +89,27 @@ finding them twenty times.
 `CONTAINER_PREFIX` decides what is collected. The filter is applied twice —
 once for logs, once for cAdvisor — because cAdvisor reports every container
 on the host regardless of the log discovery filter.
+
+The value is interpolated into a regex, not a list, so several projects on one
+box are separated by a pipe:
+
+```
+CONTAINER_PREFIX=shop|checkout
+```
+
+A bare `*` is not a wildcard — it is an invalid regex and Alloy will refuse to
+start. To collect every container on the host, including names with no hyphen:
+
+```
+CONTAINER_PREFIX=.*
+```
+
+Worth a moment's thought before you do. That same filter is the only thing
+limiting what cAdvisor ships, its per-container, per-interface and
+per-filesystem series are comfortably the highest-cardinality thing here, and
+a Prometheus remote-write receiver has no `limits_config` equivalent to reject
+what it is sent — the failure mode is head growth on the aggregator, not a 429
+on this box.
 
 `cadvisor` runs privileged; it needs cgroup and Docker filesystem access,
 which is why it is a separate container rather than folded into Alloy. Drop

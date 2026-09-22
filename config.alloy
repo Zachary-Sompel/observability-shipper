@@ -17,9 +17,15 @@ discovery.relabel "containers" {
 
   // This project's containers plus the observability stack itself. Boxes are
   // often shared; anything else on the host is never read.
+  //
+  // The trailing group is optional, so a container named exactly after the
+  // prefix is kept alongside its <prefix>-suffix siblings, and CONTAINER_PREFIX
+  // set to .* collects every container on the host including names with no
+  // hyphen at all. These regexes are fully anchored -- Alloy wraps them in
+  // ^(?:...)$ -- so the prefix still has to match from the start of the name.
   rule {
     source_labels = ["__meta_docker_container_name"]
-    regex         = "/(" + sys.env("CONTAINER_PREFIX") + "|system)-.*"
+    regex         = "/(" + sys.env("CONTAINER_PREFIX") + "|system)(-.*)?"
     action        = "keep"
   }
 
@@ -150,7 +156,7 @@ prometheus.relabel "cadvisor" {
 
   rule {
     source_labels = ["name"]
-    regex         = "(" + sys.env("CONTAINER_PREFIX") + "|system)-.*"
+    regex         = "(" + sys.env("CONTAINER_PREFIX") + "|system)(-.*)?"
     action        = "keep"
   }
 }
