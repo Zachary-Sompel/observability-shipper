@@ -220,10 +220,18 @@ prometheus.remote_write "aggregator" {
 // Loki, so a fleet of nginx boxes shares one database and one update job
 // instead of carrying a copy and a licence key each.
 
+// Both naming conventions, because both are in the wild: <site>-access.log
+// and access-<site>.log. Matching only one silently reads nothing at all --
+// no error, no empty dashboard, just a service that never appears.
+//
+// Rotated files stay excluded: every glob ends in .log, so access.log.1 and
+// access.log.9.gz match none of them. That is deliberate, see the note above.
 local.file_match "nginx" {
   path_targets = [
     { __path__ = "/var/log/nginx/*-access.log", job = "nginx", service = "nginx-access" },
     { __path__ = "/var/log/nginx/*-error.log",  job = "nginx", service = "nginx-error"  },
+    { __path__ = "/var/log/nginx/access-*.log", job = "nginx", service = "nginx-access" },
+    { __path__ = "/var/log/nginx/error-*.log",  job = "nginx", service = "nginx-error"  },
   ]
 }
 
@@ -231,12 +239,29 @@ local.file_match "nginx" {
 // stage, so it is a real stream label before the first line is read. Kept
 // verbatim: dashes are NOT converted back to dots, because a domain that
 // genuinely contains a hyphen would be ambiguous.
+//
+// One regex for both conventions: it strips a leading access-/error- or a
+// trailing -access/-error, and keeps everything else.
+//
+//   example.com-access.log   -> example.com
+//   access-example.com.log   -> example.com
+//   error-boxname-shop.log   -> boxname-shop
+//
+// That last line is worth reading twice. Whatever is left after stripping IS
+// the site label, and it is what every dashboard groups by. If the filename
+// carries a box or environment prefix, that prefix ends up in the label --
+// harmless for grouping, but it will no longer match a domain, so the Route 53
+// charge-to mapping cannot line it up. Name the files after the domain if you
+// want that to work.
+//
+// NGINX_SITE_REGEX overrides this for a box that names files some third way.
+// It must contain exactly one capture group, and that group becomes the label.
 discovery.relabel "nginx" {
   targets = local.file_match.nginx.targets
 
   rule {
     source_labels = ["__path__"]
-    regex         = "/var/log/nginx/(.+)-(?:access|error)\\.log"
+    regex         = coalesce(sys.env("NGINX_SITE_REGEX"), "/var/log/nginx/(?:(?:access|error)-)?(.+?)(?:-(?:access|error))?\\.log")
     target_label  = "site"
   }
 }
