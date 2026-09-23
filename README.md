@@ -168,6 +168,17 @@ The agent is taken as the last of the two adjacent quoted fields, which holds
 for stock combined and for the extended format with `rt=`/`urt=`/`host=` after
 it, because referer and agent stay adjacent in both.
 
+### Our own uptime monitor
+
+Uptime Kuma's checks are dropped before they ship: a line is discarded when it
+comes from an address in `MONITOR_IPS` (set in `.env`; unset drops nothing) **and** carries the
+`Uptime-Kuma/` agent. Both, so a scanner borrowing the agent string is still
+logged. Any other uptime checker (Uptime Kuma elsewhere, Pingdom, StatusCake,
+anything naming itself a monitor) is kept but classified `bot="true"`.
+
+Lines already in Loki are not touched -- the monitor's history ages out with
+retention, or delete it through Loki's delete API.
+
 ### Backfilling history
 
 Three gates stop old lines, and all three have to open. Two are on the box,

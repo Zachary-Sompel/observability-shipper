@@ -359,6 +359,23 @@ loki.process "nginx" {
       values = { level = "info" }
     }
 
+    // --- our own uptime monitor, dropped outright --------------------------
+    //
+    // Uptime Kuma polls every site's front page around the clock. Left in, it
+    // is the busiest "visitor" on quiet sites, inflates Requests and Visitors,
+    // and sits at the top of Top client addresses. It is not traffic, so it is
+    // not shipped at all. Both the address AND the agent have to match: a
+    // stranger copying the agent string still gets logged, and so does
+    // anything else that comes from our monitor's address.
+    //
+    // MONITOR_IPS is a regex alternation of addresses, dots escaped, set per
+    // box in .env -- never here, this repo is shared. Unset, the placeholder
+    // can match no address, so nothing is dropped.
+    stage.drop {
+      expression          = "^(" + coalesce(sys.env("MONITOR_IPS"), "MONITOR_IPS-unset") + ") .*\"Uptime-Kuma/"
+      drop_counter_reason = "own_uptime_monitor"
+    }
+
     // --- bot classification, decided once, here --------------------------
     //
     // Every dashboard wants "human traffic only", and the obvious way to get
@@ -380,7 +397,7 @@ loki.process "nginx" {
     }
     stage.template {
       source   = "bot"
-      template = "{{ if regexMatch \"(?i)(bot|crawl|spider|slurp|curl|wget|python|scrapy|httpclient|okhttp|java|go-http|libwww|perl|ruby|axios|node-fetch|headless|phantom|puppeteer|playwright|ahrefs|semrush|mj12|dotbot|petal|bytespider|gptbot|claudebot|ccbot|amazonbot|applebot|facebookexternalhit|dataforseo|serpstat|zoominfo|censys|masscan|zgrab|nmap|nuclei|wpscan)\" .agent }}true{{ else }}false{{ end }}"
+      template = "{{ if regexMatch \"(?i)(bot|crawl|spider|slurp|uptime|monitor|pingdom|statuscake|curl|wget|python|scrapy|httpclient|okhttp|java|go-http|libwww|perl|ruby|axios|node-fetch|headless|phantom|puppeteer|playwright|ahrefs|semrush|mj12|dotbot|petal|bytespider|gptbot|claudebot|ccbot|amazonbot|applebot|facebookexternalhit|dataforseo|serpstat|zoominfo|censys|masscan|zgrab|nmap|nuclei|wpscan)\" .agent }}true{{ else }}false{{ end }}"
     }
     // Only bot is promoted. agent stays an extracted value and is read at
     // query time by | pattern, as before -- putting it in a label would be
