@@ -171,6 +171,55 @@ prometheus.relabel "cadvisor" {
   }
 }
 
+// --- Traefik metrics -------------------------------------------------------
+// Inert unless TRAEFIK_METRICS_ADDR is set (host:port of Traefik's internal
+// metrics entrypoint, e.g. edge-traefik:8082 -- Traefik must share the
+// system-observability network with Alloy). For box 2 of the AWS site
+// platform: certificate expiry (traefik_tls_certs_not_after) and box 1's
+// health (traefik_service_server_up) are alerted on from these.
+// Unset, the one target has an empty address and is dropped here.
+discovery.relabel "traefik_metrics" {
+  targets = [
+    {"__address__" = coalesce(sys.env("TRAEFIK_METRICS_ADDR"), ""), "job" = "traefik"},
+  ]
+
+  rule {
+    source_labels = ["__address__"]
+    regex         = ""
+    action        = "drop"
+  }
+}
+
+prometheus.scrape "traefik" {
+  targets         = discovery.relabel.traefik_metrics.output
+  forward_to      = [prometheus.remote_write.aggregator.receiver]
+  scrape_interval = "30s"
+}
+
+// --- Typesense metrics -----------------------------------------------------
+// Inert unless TYPESENSE_METRICS_ADDR is set (host:port of the site platform's
+// Typesense exporter, e.g. sitebuilder-typesense-exporter:9110 -- it joins the
+// system-observability network; Typesense itself stays on its internal
+// network). Box 1 of the AWS site platform: memory (box 1 is sized by it),
+// search latency against the API's 250 ms deadline, documents per site.
+discovery.relabel "typesense_metrics" {
+  targets = [
+    {"__address__" = coalesce(sys.env("TYPESENSE_METRICS_ADDR"), ""), "job" = "typesense"},
+  ]
+
+  rule {
+    source_labels = ["__address__"]
+    regex         = ""
+    action        = "drop"
+  }
+}
+
+prometheus.scrape "typesense" {
+  targets         = discovery.relabel.typesense_metrics.output
+  forward_to      = [prometheus.remote_write.aggregator.receiver]
+  scrape_interval = "30s"
+}
+
 // --- ship ------------------------------------------------------------------
 
 loki.write "aggregator" {
@@ -424,5 +473,154 @@ loki.process "nginx" {
     stage.labels {
       values = { level = "" }
     }
+  }
+}
+
+// --- Traefik access log ----------------------------------------------------
+// For a box whose sites are served by Traefik rather than an nginx vhost per
+// site: box 2 of the AWS site platform (QuestaSearch docs/18 §10). Inert
+// unless TRAEFIK_LOG_DIR is set: with it unset the compose file mounts
+// /dev/null at /var/log/traefik and this glob matches nothing.
+//
+// The per-site dashboards and the ruler's recording rules read nginx
+// combined lines with | pattern, and the relay in front of Loki resolves
+// country from the first field of the line. Traefik writes JSON. Mapping
+// Traefik's fields onto labels is not enough for that -- the dashboards parse
+// the line itself -- so each access line is REWRITTEN into nginx's extended
+// combined format and handed to the nginx pipeline above. From there it is an
+// nginx-access line like any other: same timestamp handling, same uptime
+// monitor drop, same bot classification (one regex, not a copy of it), same
+// labels. Nothing downstream changes.
+//
+//   {"ClientHost":"203.0.113.7","RequestMethod":"GET","RequestPath":"/a?q=1",
+//    "RequestProtocol":"HTTP/2.0","DownstreamStatus":200,
+//    "DownstreamContentSize":5120,"request_Referer":"https://x/",
+//    "request_User-Agent":"Mozilla/5.0 ...","RequestHost":"www.example.com",
+//    "RouterName":"site_example_com_www@file","Duration":12345678,
+//    "StartUTC":"2026-09-24T12:50:01.123456789Z", ...}
+//   ->
+//   203.0.113.7 - - [24/Sep/2026:12:50:01 +0000] "GET /a?q=1 HTTP/2.0" 200 5120
+//     "https://x/" "Mozilla/5.0 ..." rt=0.012 host=www.example.com
+//
+// rt= and host= after the agent are the extended format some nginx boxes
+// already write; | pattern ignores them, and they keep Traefik's duration and
+// the hostname actually asked for (www./cdn./search. all count as the site).
+//
+// The site label comes from the ROUTER, never from the Host header. Router
+// names are written by one program from signed manifests (site_<domain with
+// dots as underscores>[_www|_cdn|_search]@file, builder/src/edge/traefik.ts),
+// so the label's values are bounded by the sites actually published. A Host
+// header is whatever a scanner sends, and as a label it would be unbounded.
+// Everything else -- the internal hostnames, unmatched hosts, the http->https
+// redirect -- is site="catch-all", which the dashboard sync skips.
+// TRAEFIK_SITE_ROUTER_REGEX overrides the router convention: one capture
+// group, underscores in it become dots, no backticks.
+local.file_match "traefik" {
+  path_targets = [
+    { __path__ = "/var/log/traefik/access.log", job = "traefik", service = "traefik-access" },
+  ]
+}
+
+loki.source.file "traefik" {
+  targets    = local.file_match.traefik.targets
+  forward_to = [loki.process.traefik.receiver]
+}
+
+loki.process "traefik" {
+  forward_to = [loki.process.nginx.receiver]
+
+  stage.json {
+    expressions = {
+      ts         = "StartUTC",
+      ip         = "ClientHost",
+      method     = "RequestMethod",
+      path       = "RequestPath",
+      proto      = "RequestProtocol",
+      status     = "DownstreamStatus",
+      size       = "DownstreamContentSize",
+      referer    = "\"request_Referer\"",
+      agent      = "\"request_User-Agent\"",
+      host       = "RequestHost",
+      router     = "RouterName",
+      duration   = "Duration",
+      entrypoint = "entryPointName",
+    }
+  }
+
+  // Not an access line (Traefik writes nothing else to this file, but a line
+  // cut short by a crash would otherwise reach Loki as a malformed request).
+  // A template that renders empty REMOVES its key, so the marker is set only
+  // for the lines to drop, and the drop keys on its presence.
+  stage.template {
+    source   = "not_access"
+    template = "{{ if and .status .ip .ts .method }}{{ else }}yes{{ end }}"
+  }
+  stage.drop {
+    source              = "not_access"
+    drop_counter_reason = "traefik_not_access_line"
+  }
+
+  // The healthcheck and Prometheus scrapes on the internal entrypoint are
+  // not traffic. Traefik leaves requests to its internal services out of the
+  // access log unless accessLog.addInternals is on, so this is a backstop.
+  stage.drop {
+    source              = "entrypoint"
+    value               = coalesce(sys.env("TRAEFIK_INTERNAL_ENTRYPOINT"), "metrics")
+    drop_counter_reason = "traefik_internal_entrypoint"
+  }
+
+  stage.template {
+    source   = "site"
+    template = "{{ $re := `" + coalesce(sys.env("TRAEFIK_SITE_ROUTER_REGEX"), "^site_([a-z0-9_-]+?)(?:_www|_cdn|_search)?@file$") + "` }}{{ if .router }}{{ if regexMatch $re .router }}{{ regexReplaceAllLiteral \"_\" (regexReplaceAll $re .router \"${1}\") \".\" }}{{ else }}catch-all{{ end }}{{ else }}catch-all{{ end }}"
+  }
+
+  // nginx's $time_local, in UTC: the nginx pipeline takes the timestamp from
+  // here, exactly as it does for a file nginx wrote. Second precision, as
+  // nginx's is.
+  stage.template {
+    source   = "ts"
+    template = "{{ dateInZone \"02/Jan/2006:15:04:05 -0700\" (toDate \"2006-01-02T15:04:05.999999999Z07:00\" .Value) \"UTC\" }}"
+  }
+
+  // Duration is nanoseconds; nginx's $request_time is seconds to the
+  // millisecond.
+  stage.template {
+    source   = "rt"
+    template = "{{ if .duration }}{{ printf \"%.3f\" (divf .duration 1000000000) }}{{ else }}-{{ end }}"
+  }
+
+  // nginx writes a double quote inside a quoted field as \x22, which is what
+  // keeps "<referer>" "<agent>" parseable. Empty is "-", as nginx logs it.
+  stage.template {
+    source   = "path"
+    template = "{{ Replace .Value `\"` `\\x22` -1 }}"
+  }
+  stage.template {
+    source   = "referer"
+    template = "{{ if .Value }}{{ Replace .Value `\"` `\\x22` -1 }}{{ else }}-{{ end }}"
+  }
+  stage.template {
+    source   = "agent"
+    template = "{{ if .Value }}{{ Replace .Value `\"` `\\x22` -1 }}{{ else }}-{{ end }}"
+  }
+
+  stage.template {
+    source   = "line"
+    template = "{{ .ip }} - - [{{ .ts }}] \"{{ .method }} {{ .path }} {{ .proto }}\" {{ .status }} {{ if .size }}{{ .size }}{{ else }}0{{ end }} \"{{ .referer }}\" \"{{ .agent }}\" rt={{ .rt }} host={{ if .host }}{{ .host }}{{ else }}-{{ end }}"
+  }
+  stage.output {
+    source = "line"
+  }
+
+  // From here on it is an nginx access line; the nginx pipeline drops the
+  // filename label and sets level and bot.
+  stage.static_labels {
+    values = {
+      job     = "nginx",
+      service = "nginx-access",
+    }
+  }
+  stage.labels {
+    values = { site = "" }
   }
 }

@@ -143,6 +143,58 @@ A single combined `access.log` cannot produce per-site labels at all — the
 label comes from the filename, so nginx needs a per-vhost `access_log`
 directive for any of this to work.
 
+### Traefik access logs (a box with no nginx per site)
+
+Box 2 of the AWS site platform serves every site through Traefik, which
+writes one JSON access log for all of them. Set `TRAEFIK_LOG_DIR` to the host
+directory holding `access.log` and each line is **rewritten into nginx's
+extended combined format** and fed through the nginx pipeline:
+
+```
+{"ClientHost":"203.0.113.7","RequestMethod":"GET","RequestPath":"/a",
+ "DownstreamStatus":200,"RouterName":"site_example_com@file",...}
+  ->  203.0.113.7 - - [24/Sep/2026:12:50:01 +0000] "GET /a HTTP/2.0" 200 5120
+      "-" "Mozilla/5.0 ..." rt=0.012 host=example.com
+      {service="nginx-access", site="example.com", bot="false", ...}
+```
+
+Rewritten, not relabelled: the site dashboards, the ruler's recording rules
+and the GeoIP relay all read the line with `| pattern` or a regex on the
+first field, so a JSON line would parse to nothing. After the rewrite it is an
+ordinary nginx access line — same timestamp handling, same monitor drop, same
+bot regex, same labels — and nothing on the aggregator changes. `rt=` keeps
+Traefik's duration, `host=` the hostname asked for.
+
+**`site` comes from the router name, never the `Host` header.** A header is
+whatever a scanner sends, and as a label it would be unbounded. The routers
+are written by one program from signed manifests
+(`site_<domain, dots as underscores>[_www|_cdn|_search]@file`), so
+`www.`/`cdn.`/`search.` all count as the site, and anything else — internal
+hostnames, unmatched hosts — is `site="catch-all"`, which the dashboard sync
+skips. `TRAEFIK_SITE_ROUTER_REGEX` changes the convention.
+
+Traefik does not log requests to its internal services by default
+(`accessLog.addInternals`), so the http→https redirect, `www.`→apex
+redirects (they run on `noop@internal`) and the healthcheck never appear.
+Lines on the `metrics` entrypoint are dropped in case that is ever turned on.
+
+`TRAEFIK_METRICS_ADDR` (e.g. `edge-traefik:8082`) also scrapes Traefik's
+Prometheus endpoint as `job="traefik"` — certificate expiry and backend
+health for the platform's alerts. Traefik has to join the
+`system-observability` network for Alloy to reach it. Unset, nothing is
+scraped.
+
+### Typesense metrics (the site platform's box 1)
+
+Typesense serves `/metrics.json` and `/stats.json`, not Prometheus text. The
+site platform runs a small exporter next to it (QuestaSearch
+`site-builder`, `builder typesense-exporter`, container
+`sitebuilder-typesense-exporter`) that joins the `system-observability`
+network. `TYPESENSE_METRICS_ADDR=sitebuilder-typesense-exporter:9110` scrapes
+it as `job="typesense"`: `typesense_up`, `typesense_system_memory_*`,
+`typesense_stats_search_latency_ms`, `typesense_alias_documents{domain}` and
+the rest. Unset, nothing is scraped.
+
 ### The `bot` label
 
 Access lines are classified as automated or not **as they are read**, and ship

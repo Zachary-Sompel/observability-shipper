@@ -74,6 +74,9 @@ services:
       # exists on the host and not to Alloy, which reads as a backfill
       # that ships nothing and says nothing.
       - ${NGINX_BACKFILL_DIR:-/dev/null}:/var/log/nginx-backfill:ro
+      # Traefik's JSON access log, for a box whose sites Traefik serves
+      # (the AWS platform's box 2). Same trick: unset mounts /dev/null.
+      - ${TRAEFIK_LOG_DIR:-/dev/null}:/var/log/traefik:ro
     tmpfs:
       - /tmp
     networks:
