@@ -513,8 +513,16 @@ loki.process "nginx" {
 // header is whatever a scanner sends, and as a label it would be unbounded.
 // Everything else -- the internal hostnames, unmatched hosts, the http->https
 // redirect -- is site="catch-all", which the dashboard sync skips.
+//
+// The label is the domain with dots as DASHES -- iviewdaily.com logs as
+// site="iviewdaily-com" -- the same spelling the nginx boxes produce from
+// their per-vhost filenames. That is deliberate: a site that moves from an
+// nginx box onto the platform keeps its label, so its dashboards (uids,
+// history) and every Custom dashboard that lists it carry straight over.
+// A dotted label would have been a second, separate site.
+//
 // TRAEFIK_SITE_ROUTER_REGEX overrides the router convention: one capture
-// group, underscores in it become dots, no backticks.
+// group, underscores in it become dashes, no backticks.
 local.file_match "traefik" {
   path_targets = [
     { __path__ = "/var/log/traefik/access.log", job = "traefik", service = "traefik-access" },
@@ -571,7 +579,7 @@ loki.process "traefik" {
 
   stage.template {
     source   = "site"
-    template = "{{ $re := `" + coalesce(sys.env("TRAEFIK_SITE_ROUTER_REGEX"), "^site_([a-z0-9_-]+?)(?:_www|_cdn|_search)?@file$") + "` }}{{ if .router }}{{ if regexMatch $re .router }}{{ regexReplaceAllLiteral \"_\" (regexReplaceAll $re .router \"${1}\") \".\" }}{{ else }}catch-all{{ end }}{{ else }}catch-all{{ end }}"
+    template = "{{ $re := `" + coalesce(sys.env("TRAEFIK_SITE_ROUTER_REGEX"), "^site_([a-z0-9_-]+?)(?:_www|_cdn|_search)?@file$") + "` }}{{ if .router }}{{ if regexMatch $re .router }}{{ regexReplaceAllLiteral \"_\" (regexReplaceAll $re .router \"${1}\") \"-\" }}{{ else }}catch-all{{ end }}{{ else }}catch-all{{ end }}"
   }
 
   // nginx's $time_local, in UTC: the nginx pipeline takes the timestamp from

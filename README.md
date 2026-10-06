@@ -171,7 +171,10 @@ are written by one program from signed manifests
 (`site_<domain, dots as underscores>[_www|_cdn|_search]@file`), so
 `www.`/`cdn.`/`search.` all count as the site, and anything else — internal
 hostnames, unmatched hosts — is `site="catch-all"`, which the dashboard sync
-skips. `TRAEFIK_SITE_ROUTER_REGEX` changes the convention.
+skips. The label is the domain with dots as dashes (`iviewdaily.com` →
+`site="iviewdaily-com"`), the spelling nginx boxes already produce, so a site
+that moves onto the platform keeps its label and its dashboards.
+`TRAEFIK_SITE_ROUTER_REGEX` changes the convention.
 
 Traefik does not log requests to its internal services by default
 (`accessLog.addInternals`), so the http→https redirect, `www.`→apex
